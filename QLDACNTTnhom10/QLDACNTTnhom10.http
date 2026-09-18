@@ -1,0 +1,6 @@
+@QLDACNTTnhom10_HostAddress = http://localhost:5010
+
+GET {{QLDACNTTnhom10_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
