@@ -113,4 +113,46 @@ public class MembersController : ControllerBase
         if (affected == 0) return NotFound("Không tìm thấy hội viên!");
         return Ok(new { Message = "Đã khóa hồ sơ hội viên thành công!" });
     }
+    [HttpPost("{id}/avatar")]
+    public async Task<IActionResult> UploadAvatar(int id, IFormFile file)
+    {
+        // 1. Kiểm tra file hợp lệ
+        if (file == null || file.Length == 0)
+            return BadRequest("Vui lòng chọn file ảnh hợp lệ.");
+
+        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
+        var extension = Path.GetExtension(file.FileName).ToLower();
+        if (!allowedExtensions.Contains(extension))
+            return BadRequest("Chỉ chấp nhận định dạng ảnh hợp lệ (jpg, png, webp).");
+
+        // 2. Tạo thư mục wwwroot/uploads/avatars nếu chưa có
+        var folderPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "avatars");
+        if (!Directory.Exists(folderPath))
+            Directory.CreateDirectory(folderPath);
+
+        // 3. Đặt tên file chống trùng lặp (ví dụ: member_1_63830001234.jpg)
+        var fileName = $"member_{id}_{DateTime.Now.Ticks}{extension}";
+        var filePath = Path.Combine(folderPath, fileName);
+
+        // 4. Copy file vào hệ thống
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+
+        // 5. Cập nhật đường dẫn vào Database
+        var avatarUrl = $"/uploads/avatars/{fileName}";
+        var sql = "UPDATE MEMBERS SET AvatarUrl = @AvatarUrl WHERE MemberID = @Id";
+
+        using var connection = new SqlConnection(_connectionString);
+        var affected = await connection.ExecuteAsync(sql, new { AvatarUrl = avatarUrl, Id = id });
+
+        if (affected == 0) return NotFound("Không tìm thấy hội viên để cập nhật ảnh.");
+
+        return Ok(new
+        {
+            Message = "Tải ảnh đại diện thành công!",
+            AvatarUrl = avatarUrl
+        });
+    }
 }
