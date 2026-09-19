@@ -23,14 +23,21 @@ public class MembersController : ControllerBase
     {
         using var connection = new SqlConnection(_connectionString);
         var sql = @"
-            SELECT m.MemberID, m.UserID, u.Username, u.Email, 
-                   m.FullName, m.Phone, m.DateOfBirth, m.Gender, u.IsActive
-            FROM MEMBERS m
-            JOIN USERS u ON m.UserID = u.UserID
-            WHERE m.FullName LIKE @Search OR m.Phone LIKE @Search
-            ORDER BY m.MemberID DESC";
+        SELECT m.MemberID, m.UserID, u.Username, u.Email, 
+               m.FullName, m.Phone, m.DateOfBirth, m.Gender, m.AvatarUrl, u.IsActive
+        FROM MEMBERS m
+        JOIN USERS u ON m.UserID = u.UserID
+        WHERE m.FullName LIKE @Search 
+           OR m.Phone LIKE @Search 
+           OR CAST(m.MemberID AS NVARCHAR) = @ExactSearch -- Tìm chính xác theo Mã HV
+        ORDER BY m.MemberID DESC";
 
-        var members = await connection.QueryAsync<MemberResponseDto>(sql, new { Search = $"%{search}%" });
+        var members = await connection.QueryAsync<MemberResponseDto>(sql, new
+        {
+            Search = $"%{search}%",
+            ExactSearch = search // Truyền chuỗi gốc vào để check ID
+        });
+
         return Ok(members);
     }
 
