@@ -5,9 +5,9 @@ using Dapper;
 public class ContractStatusJob : BackgroundService
 {
     private readonly IConfiguration _config;
-    private readonly ILogger _logger;
+    private readonly ILogger<ContractStatusJob> _logger;
 
-    public ContractStatusJob(IConfiguration config, ILogger logger)
+    public ContractStatusJob(IConfiguration config, ILogger<ContractStatusJob> logger)
     {
         _config = config;
         _logger = logger;
