@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using QLDACNTTnhom10.Services;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -52,7 +53,7 @@ builder.Services.AddSwaggerGen(c =>
         }
     });
 });
-builder.Services.AddHostedService();
+builder.Services.AddHostedService<ContractStatusJob>();
 builder.Services.AddControllers();
 var app = builder.Build();
 

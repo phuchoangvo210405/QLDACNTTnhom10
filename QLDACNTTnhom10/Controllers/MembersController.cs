@@ -155,4 +155,46 @@ public class MembersController : ControllerBase
             AvatarUrl = avatarUrl
         });
     }
+
+    // Nâng cấp API tìm kiếm và lọc đa điều kiện (TASK-375)
+    [HttpGet("filter")]
+    public async Task<IActionResult> FilterMembers(
+        [FromQuery] string? keyword = null,        // Tìm theo Tên, SĐT, Mã HV
+        [FromQuery] string? gender = null,         // Lọc theo Giới tính (Nam, Nữ)
+        [FromQuery] bool? isActive = null,         // Lọc theo Trạng thái tài khoản (1: Active, 0: Locked)
+        [FromQuery] string? contractStatus = null, // Lọc theo Hợp đồng (Active, Expired, Renewed)
+        [FromQuery] int? packageId = null)         // Lọc theo Gói tập đang đăng ký
+    {
+        using var connection = new SqlConnection(_connectionString);
+
+        // Sử dụng kỹ thuật (@Param IS NULL OR Column = @Param) để xử lý lọc động
+        var sql = @"
+        SELECT DISTINCT 
+            m.MemberID, m.UserID, u.Username, u.Email, 
+            m.FullName, m.Phone, m.DateOfBirth, m.Gender, m.AvatarUrl, u.IsActive
+        FROM MEMBERS m
+        JOIN USERS u ON m.UserID = u.UserID
+        LEFT JOIN CONTRACTS c ON m.MemberID = c.MemberID
+        WHERE (@Keyword IS NULL 
+               OR m.FullName LIKE @SearchPattern 
+               OR m.Phone LIKE @SearchPattern 
+               OR CAST(m.MemberID AS NVARCHAR) = @Keyword)
+          AND (@Gender IS NULL OR m.Gender = @Gender)
+          AND (@IsActive IS NULL OR u.IsActive = @IsActive)
+          AND (@ContractStatus IS NULL OR c.Status = @ContractStatus)
+          AND (@PackageId IS NULL OR c.PackageID = @PackageId)
+        ORDER BY m.MemberID DESC";
+
+        var members = await connection.QueryAsync<MemberResponseDto>(sql, new
+        {
+            Keyword = string.IsNullOrWhiteSpace(keyword) ? null : keyword.Trim(),
+            SearchPattern = string.IsNullOrWhiteSpace(keyword) ? null : $"%{keyword.Trim()}%",
+            Gender = string.IsNullOrWhiteSpace(gender) ? null : gender.Trim(),
+            IsActive = isActive,
+            ContractStatus = string.IsNullOrWhiteSpace(contractStatus) ? null : contractStatus.Trim(),
+            PackageId = packageId
+        });
+
+        return Ok(members);
+    }
 }
