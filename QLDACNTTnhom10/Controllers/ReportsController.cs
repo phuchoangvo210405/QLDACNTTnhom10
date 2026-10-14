@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using QLDACNTTnhom10.DTOs;
 using QLDACNTTNhom10.DTOs;
-
+using System.Text.RegularExpressions;
 namespace QLDACNTTNhom10.Controllers
 {
     [Route("api/[controller]")]
@@ -310,65 +310,197 @@ namespace QLDACNTTNhom10.Controllers
         }
 
         // ==========================================
-        // 4. API IMPORT EXCEL: NHẬP HỘI VIÊN HÀNG LOẠT
+        // 4. API IMPORT EXCEL KÈM VALIDATE CHI TIẾT (TASK-387)
         // ==========================================
         [HttpPost("import-members")]
         public async Task<IActionResult> ImportMembersFromExcel(IFormFile file)
         {
+            // --- TẦNG 1: KIỂM TRA FILE ĐẦU VÀO ---
             if (file == null || file.Length == 0)
-                return BadRequest("Vui lòng chọn file Excel (.xlsx) để tải lên.");
+                return BadRequest(new { Message = "Vui lòng chọn file Excel (.xlsx) không rỗng để tải lên." });
 
             if (!Path.GetExtension(file.FileName).Equals(".xlsx", StringComparison.OrdinalIgnoreCase))
-                return BadRequest("Hệ thống chỉ hỗ trợ định dạng file .xlsx");
+                return BadRequest(new { Message = "Sai định dạng! Hệ thống chỉ hỗ trợ file có đuôi .xlsx" });
 
-            int successCount = 0;
-            var errors = new List<string>();
+            const long maxFileSize = 5 * 1024 * 1024; // 5MB
+            if (file.Length > maxFileSize)
+                return BadRequest(new { Message = "Dung lượng file vượt quá giới hạn cho phép (Tối đa 5MB)." });
 
             using var stream = new MemoryStream();
             await file.CopyToAsync(stream);
-            using var workbook = new XLWorkbook(stream);
-            var worksheet = workbook.Worksheet(1);
-            var rows = worksheet.RangeUsed()?.RowsUsed().Skip(1); // Bỏ qua dòng tiêu đề (dòng 1)
 
-            if (rows == null)
-                return BadRequest("File Excel không có dữ liệu.");
+            XLWorkbook workbook;
+            try
+            {
+                workbook = new XLWorkbook(stream);
+            }
+            catch
+            {
+                return BadRequest(new { Message = "File Excel bị hỏng hoặc không đúng cấu trúc OpenXML." });
+            }
+
+            var worksheet = workbook.Worksheets.FirstOrDefault();
+            if (worksheet == null || worksheet.RangeUsed() == null)
+                return BadRequest(new { Message = "File Excel không có trang tính hoặc không có dữ liệu." });
+
+            // Tự động kiểm tra xem Cột 1 có phải là cột "STT" hoặc "Mã HV" không
+            string firstHeader = worksheet.Cell(1, 1).GetString().Trim();
+            int offset = (firstHeader.Equals("STT", StringComparison.OrdinalIgnoreCase) ||
+                          firstHeader.Contains("Mã", StringComparison.OrdinalIgnoreCase)) ? 1 : 0;
+
+            // Kiểm tra các cột bắt buộc (Username, Email, Họ tên, SĐT) đã dịch theo offset
+            string colUsername = worksheet.Cell(1, 1 + offset).GetString().Trim();
+            string colEmail = worksheet.Cell(1, 2 + offset).GetString().Trim();
+            string colFullName = worksheet.Cell(1, 3 + offset).GetString().Trim();
+            string colPhone = worksheet.Cell(1, 4 + offset).GetString().Trim();
+
+            if (string.IsNullOrEmpty(colUsername) || string.IsNullOrEmpty(colEmail) ||
+                string.IsNullOrEmpty(colFullName) || string.IsNullOrEmpty(colPhone))
+            {
+                return BadRequest(new
+                {
+                    Message = "Cấu trúc cột tiêu đề (Dòng 1) không hợp lệ. Yêu cầu: STT | Username | Email | FullName | Phone | DateOfBirth | Gender"
+                });
+            }
+
+            var rows = worksheet.RangeUsed()!.RowsUsed().Skip(1).ToList(); // Bỏ qua dòng tiêu đề
+            if (!rows.Any())
+                return BadRequest(new { Message = "File Excel chỉ có tiêu đề, không có dòng dữ liệu hội viên nào." });
+
+            int successCount = 0;
+            var errorReport = new List<object>();
+
+            // HashSet dùng để bắt trùng lặp ngay trong nội bộ file Excel
+            var seenUsernames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenPhones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
 
-            // Cấu trúc cột đọc vào (khớp với thứ tự hoặc tạo file mẫu):
-            // Cột 1: Username | Cột 2: Email | Cột 3: Họ Tên | Cột 4: SĐT | Cột 5: Ngày sinh (yyyy-MM-dd) | Cột 6: Giới tính
             foreach (var row in rows)
             {
                 int rowNum = row.RowNumber();
-                string username = row.Cell(1).GetValue<string>().Trim();
-                string email = row.Cell(2).GetValue<string>().Trim();
-                string fullName = row.Cell(3).GetValue<string>().Trim();
-                string phone = row.Cell(4).GetValue<string>().Trim();
-                string dobStr = row.Cell(5).GetValue<string>().Trim();
-                string gender = row.Cell(6).GetValue<string>().Trim();
+                var rowErrors = new List<string>();
 
-                if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(fullName))
+                // Nếu có cột STT ở Cột 1 (offset = 1), code sẽ tự động lấy Username từ Cột 2 trở đi
+                string username = row.Cell(1 + offset).GetString().Trim(); // Cột 2
+                string email = row.Cell(2 + offset).GetString().Trim(); // Cột 3
+                string fullName = row.Cell(3 + offset).GetString().Trim(); // Cột 4
+                string phone = row.Cell(4 + offset).GetString().Trim(); // Cột 5
+                var dobCell = row.Cell(5 + offset);                    // Cột 6 (Ô Ngày sinh)
+                string dobStr = dobCell.GetString().Trim();
+                string gender = row.Cell(6 + offset).GetString().Trim(); // Cột 7
+
+                // Bỏ qua dòng trắng hoàn toàn
+                if (string.IsNullOrEmpty(username) && string.IsNullOrEmpty(email) && string.IsNullOrEmpty(fullName) && string.IsNullOrEmpty(phone))
+                    continue;
+
+                // --- TẦNG 2: VALIDATE ĐỊNH DẠNG & ĐỘ DÀI TỪNG CỘT ---
+                // 1. Validate Username
+                if (string.IsNullOrWhiteSpace(username))
+                    rowErrors.Add("Cột 1 (Username): Không được để trống.");
+                else if (!Regex.IsMatch(username, @"^[a-zA-Z0-9_]{3,50}$"))
+                    rowErrors.Add("Cột 1 (Username): Phải từ 3-50 ký tự, chỉ gồm chữ cái không dấu, số hoặc dấu gạch dưới.");
+
+                // 2. Validate Email
+                if (string.IsNullOrWhiteSpace(email))
+                    rowErrors.Add("Cột 2 (Email): Không được để trống.");
+                else if (email.Length > 100 || !Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+                    rowErrors.Add("Cột 2 (Email): Định dạng Email không hợp lệ hoặc vượt quá 100 ký tự.");
+
+                // 3. Validate Họ tên
+                if (string.IsNullOrWhiteSpace(fullName))
+                    rowErrors.Add("Cột 3 (FullName): Họ và tên không được để trống.");
+                else if (fullName.Length > 100)
+                    rowErrors.Add("Cột 3 (FullName): Họ và tên vượt quá 100 ký tự.");
+
+                // 4. Validate Số điện thoại
+                if (string.IsNullOrWhiteSpace(phone))
+                    rowErrors.Add("Cột 4 (Phone): Số điện thoại không được để trống.");
+                else if (!Regex.IsMatch(phone, @"^0\d{9}$"))
+                    rowErrors.Add("Cột 4 (Phone): Số điện thoại phải gồm đúng 10 chữ số và bắt đầu bằng số 0.");
+
+                // 5. Validate Ngày sinh (Không bắt buộc, nhưng nếu nhập phải đúng chuẩn)
+                DateTime? dob = null;
+                if (!string.IsNullOrWhiteSpace(dobStr))
                 {
-                    errors.Add($"Dòng {rowNum}: Thiếu Username, Email hoặc Họ tên.");
+                    if (row.Cell(5).TryGetValue<DateTime>(out DateTime excelDob))
+                    {
+                        dob = excelDob;
+                    }
+                    else if (DateTime.TryParse(dobStr, out DateTime parsedDob))
+                    {
+                        dob = parsedDob;
+                    }
+                    else
+                    {
+                        rowErrors.Add("Cột 5 (DateOfBirth): Định dạng ngày sinh không hợp lệ (Chuẩn: yyyy-MM-dd).");
+                    }
+
+                    if (dob.HasValue)
+                    {
+                        int age = DateTime.Today.Year - dob.Value.Year;
+                        if (dob.Value.Date > DateTime.Today || age < 10 || age > 100)
+                            rowErrors.Add("Cột 5 (DateOfBirth): Ngày sinh không hợp lệ (Độ tuổi hội viên phải từ 10 đến 100 tuổi).");
+                    }
+                }
+
+                // 6. Validate Giới tính
+                var validGenders = new[] { "Nam", "Nữ", "Khác" };
+                if (!string.IsNullOrWhiteSpace(gender) && !validGenders.Contains(gender, StringComparer.OrdinalIgnoreCase))
+                {
+                    rowErrors.Add("Cột 6 (Gender): Giới tính chỉ chấp nhận 'Nam', 'Nữ', 'Khác' hoặc để trống.");
+                }
+
+                // --- TẦNG 3: KIỂM TRA TRÙNG LẶP TRONG FILE EXCEL & TRONG DATABASE ---
+                if (!string.IsNullOrWhiteSpace(username) && !seenUsernames.Add(username))
+                    rowErrors.Add($"Username '{username}' bị lặp lại nhiều lần trong file Excel.");
+
+                if (!string.IsNullOrWhiteSpace(email) && !seenEmails.Add(email))
+                    rowErrors.Add($"Email '{email}' bị lặp lại nhiều lần trong file Excel.");
+
+                if (!string.IsNullOrWhiteSpace(phone) && !seenPhones.Add(phone))
+                    rowErrors.Add($"Số điện thoại '{phone}' bị lặp lại nhiều lần trong file Excel.");
+
+                // Nếu dữ liệu cơ bản hợp lệ thì kiểm tra tiếp trong Database
+                if (!rowErrors.Any())
+                {
+                    var dbConflict = await connection.QueryFirstOrDefaultAsync<string>(@"
+                        SELECT TOP 1 
+                            CASE 
+                                WHEN u.Username = @Username THEN N'Username đã tồn tại trong CSDL'
+                                WHEN u.Email = @Email THEN N'Email đã tồn tại trong CSDL'
+                                WHEN m.Phone = @Phone THEN N'Số điện thoại đã tồn tại trong CSDL'
+                            END
+                        FROM USERS u
+                        LEFT JOIN MEMBERS m ON u.UserID = m.UserID
+                        WHERE u.Username = @Username OR u.Email = @Email OR m.Phone = @Phone",
+                        new { Username = username, Email = email, Phone = phone });
+
+                    if (!string.IsNullOrEmpty(dbConflict))
+                    {
+                        rowErrors.Add(dbConflict);
+                    }
+                }
+
+                // Nếu dòng này có bất kỳ lỗi nào -> Ghi vào danh sách lỗi và bỏ qua không Insert
+                if (rowErrors.Any())
+                {
+                    errorReport.Add(new
+                    {
+                        RowNumber = rowNum,
+                        Username = username,
+                        Email = email,
+                        Errors = rowErrors
+                    });
                     continue;
                 }
 
-                // Kiểm tra trùng Username hoặc Email
-                var exists = await connection.ExecuteScalarAsync<int>(
-                    "SELECT COUNT(1) FROM USERS WHERE Username = @Username OR Email = @Email",
-                    new { Username = username, Email = email });
-
-                if (exists > 0)
-                {
-                    errors.Add($"Dòng {rowNum}: Username '{username}' hoặc Email '{email}' đã tồn tại.");
-                    continue;
-                }
-
+                // --- TẦNG 4: LƯU VÀO CSDL BẰNG TRANSACTION ---
                 using var transaction = connection.BeginTransaction();
                 try
                 {
-                    // Mật khẩu mặc định khi import là "Gym@123"
                     string defaultPasswordHash = BCrypt.Net.BCrypt.HashPassword("Gym@123");
 
                     var sqlUser = @"
@@ -378,8 +510,6 @@ namespace QLDACNTTNhom10.Controllers
 
                     int newUserId = await connection.ExecuteScalarAsync<int>(
                         sqlUser, new { Username = username, PasswordHash = defaultPasswordHash, Email = email }, transaction);
-
-                    DateTime? dob = DateTime.TryParse(dobStr, out DateTime parsedDob) ? parsedDob : null;
 
                     var sqlMember = @"
                         INSERT INTO MEMBERS (UserID, FullName, Phone, DateOfBirth, Gender)
@@ -400,15 +530,23 @@ namespace QLDACNTTNhom10.Controllers
                 catch (Exception ex)
                 {
                     transaction.Rollback();
-                    errors.Add($"Dòng {rowNum}: Lỗi hệ thống ({ex.Message})");
+                    errorReport.Add(new
+                    {
+                        RowNumber = rowNum,
+                        Username = username,
+                        Email = email,
+                        Errors = new List<string> { $"Lỗi CSDL: {ex.Message}" }
+                    });
                 }
             }
 
             return Ok(new
             {
-                Message = $"Hoàn tất Import! Thành công: {successCount} hội viên. Lỗi/Bỏ qua: {errors.Count} dòng.",
+                Message = $"Kiểm tra và xử lý hoàn tất! Thành công: {successCount} dòng. Lỗi: {errorReport.Count} dòng.",
+                TotalRowsProcessed = successCount + errorReport.Count,
                 SuccessCount = successCount,
-                ErrorDetails = errors
+                FailedCount = errorReport.Count,
+                ErrorDetails = errorReport
             });
         }
     }
