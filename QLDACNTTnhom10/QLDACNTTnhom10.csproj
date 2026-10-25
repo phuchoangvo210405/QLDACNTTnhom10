@@ -8,7 +8,9 @@
 
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
+    <PackageReference Include="ClosedXML" Version="0.89.0" />
     <PackageReference Include="Dapper" Version="2.1.86" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="2.20.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.31" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.31">
@@ -21,12 +23,12 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.32" />
   </ItemGroup>
 
   <ItemGroup>
     <Folder Include="Models\" />
     <Folder Include="Data\" />
-    <Folder Include="Services\" />
   </ItemGroup>
 
 </Project>

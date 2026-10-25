@@ -23,14 +23,21 @@ public class MembersController : ControllerBase
     {
         using var connection = new SqlConnection(_connectionString);
         var sql = @"
-            SELECT m.MemberID, m.UserID, u.Username, u.Email, 
-                   m.FullName, m.Phone, m.DateOfBirth, m.Gender, u.IsActive
-            FROM MEMBERS m
-            JOIN USERS u ON m.UserID = u.UserID
-            WHERE m.FullName LIKE @Search OR m.Phone LIKE @Search
-            ORDER BY m.MemberID DESC";
+        SELECT m.MemberID, m.UserID, u.Username, u.Email, 
+               m.FullName, m.Phone, m.DateOfBirth, m.Gender, m.AvatarUrl, u.IsActive
+        FROM MEMBERS m
+        JOIN USERS u ON m.UserID = u.UserID
+        WHERE m.FullName LIKE @Search 
+           OR m.Phone LIKE @Search 
+           OR CAST(m.MemberID AS NVARCHAR) = @ExactSearch -- Tìm chính xác theo Mã HV
+        ORDER BY m.MemberID DESC";
 
-        var members = await connection.QueryAsync<MemberResponseDto>(sql, new { Search = $"%{search}%" });
+        var members = await connection.QueryAsync<MemberResponseDto>(sql, new
+        {
+            Search = $"%{search}%",
+            ExactSearch = search // Truyền chuỗi gốc vào để check ID
+        });
+
         return Ok(members);
     }
 
@@ -105,5 +112,89 @@ public class MembersController : ControllerBase
 
         if (affected == 0) return NotFound("Không tìm thấy hội viên!");
         return Ok(new { Message = "Đã khóa hồ sơ hội viên thành công!" });
+    }
+    [HttpPost("{id}/avatar")]
+    public async Task<IActionResult> UploadAvatar(int id, IFormFile file)
+    {
+        // 1. Kiểm tra file hợp lệ
+        if (file == null || file.Length == 0)
+            return BadRequest("Vui lòng chọn file ảnh hợp lệ.");
+
+        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
+        var extension = Path.GetExtension(file.FileName).ToLower();
+        if (!allowedExtensions.Contains(extension))
+            return BadRequest("Chỉ chấp nhận định dạng ảnh hợp lệ (jpg, png, webp).");
+
+        // 2. Tạo thư mục wwwroot/uploads/avatars nếu chưa có
+        var folderPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "avatars");
+        if (!Directory.Exists(folderPath))
+            Directory.CreateDirectory(folderPath);
+
+        // 3. Đặt tên file chống trùng lặp (ví dụ: member_1_63830001234.jpg)
+        var fileName = $"member_{id}_{DateTime.Now.Ticks}{extension}";
+        var filePath = Path.Combine(folderPath, fileName);
+
+        // 4. Copy file vào hệ thống
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+
+        // 5. Cập nhật đường dẫn vào Database
+        var avatarUrl = $"/uploads/avatars/{fileName}";
+        var sql = "UPDATE MEMBERS SET AvatarUrl = @AvatarUrl WHERE MemberID = @Id";
+
+        using var connection = new SqlConnection(_connectionString);
+        var affected = await connection.ExecuteAsync(sql, new { AvatarUrl = avatarUrl, Id = id });
+
+        if (affected == 0) return NotFound("Không tìm thấy hội viên để cập nhật ảnh.");
+
+        return Ok(new
+        {
+            Message = "Tải ảnh đại diện thành công!",
+            AvatarUrl = avatarUrl
+        });
+    }
+
+    // Nâng cấp API tìm kiếm và lọc đa điều kiện (TASK-375)
+    [HttpGet("filter")]
+    public async Task<IActionResult> FilterMembers(
+        [FromQuery] string? keyword = null,        // Tìm theo Tên, SĐT, Mã HV
+        [FromQuery] string? gender = null,         // Lọc theo Giới tính (Nam, Nữ)
+        [FromQuery] bool? isActive = null,         // Lọc theo Trạng thái tài khoản (1: Active, 0: Locked)
+        [FromQuery] string? contractStatus = null, // Lọc theo Hợp đồng (Active, Expired, Renewed)
+        [FromQuery] int? packageId = null)         // Lọc theo Gói tập đang đăng ký
+    {
+        using var connection = new SqlConnection(_connectionString);
+
+        // Sử dụng kỹ thuật (@Param IS NULL OR Column = @Param) để xử lý lọc động
+        var sql = @"
+        SELECT DISTINCT 
+            m.MemberID, m.UserID, u.Username, u.Email, 
+            m.FullName, m.Phone, m.DateOfBirth, m.Gender, m.AvatarUrl, u.IsActive
+        FROM MEMBERS m
+        JOIN USERS u ON m.UserID = u.UserID
+        LEFT JOIN CONTRACTS c ON m.MemberID = c.MemberID
+        WHERE (@Keyword IS NULL 
+               OR m.FullName LIKE @SearchPattern 
+               OR m.Phone LIKE @SearchPattern 
+               OR CAST(m.MemberID AS NVARCHAR) = @Keyword)
+          AND (@Gender IS NULL OR m.Gender = @Gender)
+          AND (@IsActive IS NULL OR u.IsActive = @IsActive)
+          AND (@ContractStatus IS NULL OR c.Status = @ContractStatus)
+          AND (@PackageId IS NULL OR c.PackageID = @PackageId)
+        ORDER BY m.MemberID DESC";
+
+        var members = await connection.QueryAsync<MemberResponseDto>(sql, new
+        {
+            Keyword = string.IsNullOrWhiteSpace(keyword) ? null : keyword.Trim(),
+            SearchPattern = string.IsNullOrWhiteSpace(keyword) ? null : $"%{keyword.Trim()}%",
+            Gender = string.IsNullOrWhiteSpace(gender) ? null : gender.Trim(),
+            IsActive = isActive,
+            ContractStatus = string.IsNullOrWhiteSpace(contractStatus) ? null : contractStatus.Trim(),
+            PackageId = packageId
+        });
+
+        return Ok(members);
     }
 }
