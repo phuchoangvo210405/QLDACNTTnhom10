@@ -84,12 +84,73 @@ namespace QLDACNTTNhom10.Services
                 memberEmailsSent++;
             }
 
-            
+            // 3. TASK-377: Tổng hợp danh sách hội viên sắp hết hạn (0 - 7 ngày tới) gửi cho Lễ tân / Sale
+            var expiringListSql = @"
+                SELECT 
+                    c.ContractID, m.FullName, m.Phone, p.PackageName, c.EndDate,
+                    DATEDIFF(DAY, CAST(GETDATE() AS DATE), c.EndDate) AS DaysLeft
+                FROM CONTRACTS c
+                JOIN MEMBERS m ON c.MemberID = m.MemberID
+                JOIN PACKAGES p ON c.PackageID = p.PackageID
+                WHERE c.Status = N'Active'
+                  AND DATEDIFF(DAY, CAST(GETDATE() AS DATE), c.EndDate) BETWEEN 0 AND 7
+                ORDER BY c.EndDate ASC";
+
+            var expiringContracts = (await connection.QueryAsync(expiringListSql)).ToList();
+            int staffEmailsSent = 0;
+
+            if (expiringContracts.Any())
+            {
+                // Lấy danh sách Email của nhân viên Sale/Lễ tân (Role = Staff hoặc Admin)
+                var staffEmailsSql = @"
+                    SELECT u.Email FROM USERS u
+                    JOIN ROLES r ON u.RoleID = r.RoleID
+                    WHERE r.RoleName IN (N'Staff', N'Admin') AND u.IsActive = 1";
+
+                var staffEmails = (await connection.QueryAsync<string>(staffEmailsSql)).ToList();
+
+                // Tạo bảng HTML danh sách hội viên cần chăm sóc
+                string rowsHtml = string.Join("", expiringContracts.Select(x => $@"
+                    <tr>
+                        <td style='padding:6px;border:1px solid #ccc;'>#{x.ContractID}</td>
+                        <td style='padding:6px;border:1px solid #ccc;'>{x.FullName}</td>
+                        <td style='padding:6px;border:1px solid #ccc;'>{x.Phone}</td>
+                        <td style='padding:6px;border:1px solid #ccc;'>{x.PackageName}</td>
+                        <td style='padding:6px;border:1px solid #ccc;'>{((DateTime)x.EndDate):dd/MM/yyyy} ({x.DaysLeft} ngày)</td>
+                    </tr>"));
+
+                string staffHtmlBody = $@"
+                    <h3>Báo cáo tự động: Danh sách hội viên sắp hết hạn trong 7 ngày tới</h3>
+                    <p>Đội ngũ Lễ tân / Sale vui lòng liên hệ tư vấn gia hạn cho các hội viên dưới đây:</p>
+                    <table style='border-collapse:collapse;width:100%;'>
+                        <thead>
+                            <tr style='background:#f0f0f0;'>
+                                <th style='padding:6px;border:1px solid #ccc;'>Mã HĐ</th>
+                                <th style='padding:6px;border:1px solid #ccc;'>Họ tên</th>
+                                <th style='padding:6px;border:1px solid #ccc;'>SĐT</th>
+                                <th style='padding:6px;border:1px solid #ccc;'>Gói tập</th>
+                                <th style='padding:6px;border:1px solid #ccc;'>Ngày hết hạn</th>
+                            </tr>
+                        </thead>
+                        <tbody>{rowsHtml}</tbody>
+                    </table>";
+
+                foreach (var staffEmail in staffEmails)
+                {
+                    await _emailService.SendEmailAsync(
+                        staffEmail,
+                        $"[Sale Alert] Danh sách {expiringContracts.Count} hội viên sắp hết hạn hợp đồng",
+                        staffHtmlBody);
+                    staffEmailsSent++;
+                }
+            }
+
             return new
             {
                 ExpiredUpdated = expiredCount,
                 MemberReminderEmailsSent = memberEmailsSent,
-                
+                ExpiringContractsFoundForStaff = expiringContracts.Count,
+                StaffSummaryEmailsSent = staffEmailsSent
             };
         }
     }
