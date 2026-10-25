@@ -20,7 +20,38 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(keyBytes)
+            IssuerSigningKey = new SymmetricSecurityKey(keyBytes),
+            ClockSkew = TimeSpan.Zero // Hết hạn token là chặn ngay lập tức
+        };
+
+        // Bổ sung xử lý phản hồi JSON cho Middleware Phân quyền (TASK-361)
+        options.Events = new JwtBearerEvents
+        {
+            // 1. Khi chưa gửi Token hoặc Token sai/hết hạn (Lỗi 401)
+            OnChallenge = context =>
+            {
+                context.HandleResponse();
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.ContentType = "application/json";
+                var result = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    Status = 401,
+                    Message = "Bạn chưa đăng nhập hoặc phiên đăng nhập (Token) đã hết hạn!"
+                });
+                return context.Response.WriteAsync(result);
+            },
+            // 2. Khi đã đăng nhập nhưng Role không được phép truy cập API này (Lỗi 403)
+            OnForbidden = context =>
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.ContentType = "application/json";
+                var result = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    Status = 403,
+                    Message = "Truy cập bị từ chối! Vai trò (Role) của bạn không có quyền thực hiện chức năng này."
+                });
+                return context.Response.WriteAsync(result);
+            }
         };
     });
 
@@ -62,8 +93,9 @@ var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
 
-app.UseStaticFiles(); // Cho phép truy cập thư mục wwwroot
-app.UseAuthentication(); // Đặt trước UseAuthorization
+app.UseCors("AllowAll");
+app.UseStaticFiles();
+app.UseAuthentication(); // Bắt buộc đứng trước UseAuthorization
 app.UseAuthorization();
 app.MapControllers();
 app.Run();
