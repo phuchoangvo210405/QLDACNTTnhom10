@@ -1,11 +1,12 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Dapper;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
-using Dapper;
 using Microsoft.IdentityModel.Tokens;
+using QLDACNTTnhom10.DTOs;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
-using QLDACNTTnhom10.DTOs;
 namespace QLDACNTTnhom10.Controllers;
 [Route("api/[controller]")]
 [ApiController]
@@ -49,6 +50,7 @@ public class AuthController : ControllerBase
     }
 
     // --- 2. API ĐĂNG NHẬP (LOGIN) ---
+    [AllowAnonymous]
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginDto req)
     {
