@@ -210,4 +210,15 @@ public class ContractsController : ControllerBase
 
         return Ok(contract);
     }
+    // API kích hoạt chạy thử Cronjob gửi Email ngay lập tức trên Swagger (Test TASK-346, 356, 377)
+    [HttpPost("trigger-email-cronjob")]
+    public async Task<IActionResult> TriggerEmailCronjob([FromServices] QLDACNTTNhom10.Services.ContractStatusJob job)
+    {
+        var result = await job.ProcessDailyContractTasksAsync();
+        return Ok(new
+        {
+            Message = "Đã thực thi quét hợp đồng và gửi Email thành công!",
+            Details = result
+        });
+    }
 }
