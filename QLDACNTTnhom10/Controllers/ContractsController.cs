@@ -163,4 +163,51 @@ public class ContractsController : ControllerBase
             return BadRequest($"Lỗi hệ thống khi gia hạn: {ex.Message}");
         }
     }
+    // 1. GET /api/contracts : Lấy danh sách hợp đồng (kèm JOIN họ tên hội viên, tên gói)
+    [HttpGet]
+    public async Task<IActionResult> GetAllContracts([FromQuery] string? status = null)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        var sql = @"
+                SELECT 
+                    c.ContractID, c.MemberID, m.FullName AS MemberName, m.Phone AS MemberPhone,
+                    c.PackageID, p.PackageName, p.PackageType,
+                    c.TrainerID, c.ClassID,
+                    c.StartDate, c.EndDate, c.RemainingSessions,
+                    c.TotalAmount, c.DiscountAmount, c.PromoCode, c.Status, c.CreatedAt
+                FROM CONTRACTS c
+                JOIN MEMBERS m ON c.MemberID = m.MemberID
+                JOIN PACKAGES p ON c.PackageID = p.PackageID
+                WHERE (@Status IS NULL OR c.Status = @Status)
+                ORDER BY c.ContractID DESC";
+
+        var contracts = await connection.QueryAsync(sql, new { Status = status });
+        return Ok(contracts);
+    }
+
+    // 2. GET /api/contracts/{id} : Xem chi tiết 1 hợp đồng cho trang contract-detail.html
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetContractById(int id)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        var sql = @"
+                SELECT 
+                    c.ContractID, c.MemberID, m.FullName AS MemberName, m.Phone AS MemberPhone,
+                    c.PackageID, p.PackageName, p.PackageType, p.DurationDays, p.Price AS OriginalPrice,
+                    c.TrainerID, t.Specialization AS TrainerSpecialization,
+                    c.ClassID, cls.ClassName,
+                    c.StartDate, c.EndDate, c.RemainingSessions,
+                    c.TotalAmount, c.DiscountAmount, c.PromoCode, c.Status, c.LastRemindedDate, c.CreatedAt
+                FROM CONTRACTS c
+                JOIN MEMBERS m ON c.MemberID = m.MemberID
+                JOIN PACKAGES p ON c.PackageID = p.PackageID
+                LEFT JOIN TRAINERS t ON c.TrainerID = t.TrainerID
+                LEFT JOIN CLASSES cls ON c.ClassID = cls.ClassID
+                WHERE c.ContractID = @Id";
+
+        var contract = await connection.QuerySingleOrDefaultAsync(sql, new { Id = id });
+        if (contract == null) return NotFound("Không tìm thấy hợp đồng.");
+
+        return Ok(contract);
+    }
 }

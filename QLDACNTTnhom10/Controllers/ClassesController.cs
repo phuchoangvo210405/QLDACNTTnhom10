@@ -180,4 +180,87 @@ public class ClassesController : ControllerBase
 
         return Ok(new { Message = "Đã xóa ca học thành công!" });
     }
+    // 1. GET /api/classes : Lấy danh sách lớp để đưa vào dropdown
+    [HttpGet]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetAllClasses()
+    {
+        using var connection = new SqlConnection(_connectionString);
+        var sql = @"
+                SELECT c.ClassID, c.ClassName, c.TrainerID, t.Specialization AS TrainerName, c.Capacity
+                FROM CLASSES c
+                JOIN TRAINERS t ON c.TrainerID = t.TrainerID
+                ORDER BY c.ClassID DESC";
+
+        var classes = await connection.QueryAsync(sql);
+        return Ok(classes);
+    }
+
+    // 2. GET /api/classes/schedules : Lấy danh sách ca học hiển thị lên thời khóa biểu
+    [HttpGet("schedules")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetAllSchedules([FromQuery] DateTime? fromDate = null, [FromQuery] DateTime? toDate = null)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        var sql = @"
+                SELECT 
+                    s.ScheduleID, s.ClassID, c.ClassName, c.TrainerID, 
+                    s.Room, s.StartTime, s.EndTime, c.Capacity,
+                    (SELECT COUNT(1) FROM CHECK_INS chk WHERE chk.ScheduleID = s.ScheduleID) AS CurrentBooked
+                FROM CLASS_SCHEDULES s
+                JOIN CLASSES c ON s.ClassID = c.ClassID
+                WHERE (@FromDate IS NULL OR CAST(s.StartTime AS DATE) >= @FromDate)
+                  AND (@ToDate IS NULL OR CAST(s.StartTime AS DATE) <= @ToDate)
+                ORDER BY s.StartTime ASC";
+
+        var schedules = await connection.QueryAsync(sql, new { FromDate = fromDate?.Date, ToDate = toDate?.Date });
+        return Ok(schedules);
+    }
+
+    // 3. POST /api/classes/schedules/{id}/book : Hội viên đăng ký giữ chỗ vào lớp (kiểm tra Capacity)
+    [HttpPost("schedules/{id}/book")]
+    [Authorize] // Cho phép cả Member, Staff, Admin gọi
+    public async Task<IActionResult> BookSchedule(int id, [FromBody] BookScheduleRequest req)
+    {
+        using var connection = new SqlConnection(_connectionString);
+
+        // Kiểm tra thông tin ca học và sức chứa (Capacity) của lớp
+        var scheduleInfoSql = @"
+                SELECT s.ScheduleID, s.StartTime, c.Capacity,
+                       (SELECT COUNT(1) FROM CHECK_INS chk WHERE chk.ScheduleID = s.ScheduleID) AS CurrentBooked
+                FROM CLASS_SCHEDULES s
+                JOIN CLASSES c ON s.ClassID = c.ClassID
+                WHERE s.ScheduleID = @ScheduleID";
+
+        var schedule = await connection.QuerySingleOrDefaultAsync(scheduleInfoSql, new { ScheduleID = id });
+        if (schedule == null) return NotFound("Không tìm thấy ca học này.");
+
+        // Kiểm tra sĩ số tối đa
+        if (schedule.CurrentBooked >= schedule.Capacity)
+            return BadRequest("Lớp học này đã đủ sĩ số tối đa (Full Capacity).");
+
+        // Kiểm tra xem hội viên đã đặt chỗ ca này chưa
+        var alreadyBooked = await connection.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM CHECK_INS WHERE ScheduleID = @ScheduleID AND MemberID = @MemberID",
+            new { ScheduleID = id, req.MemberID });
+
+        if (alreadyBooked > 0)
+            return BadRequest("Hội viên đã đăng ký ca học này rồi.");
+
+        // Ghi nhận đặt chỗ/điểm danh vào CHECK_INS (Lấy giờ StartTime của ca học để luôn thỏa mãn ràng buộc 7h-23h)
+        var insertSql = @"
+                INSERT INTO CHECK_INS (MemberID, ContractID, ScheduleID, CheckInTime, CheckInType)
+                VALUES (@MemberID, @ContractID, @ScheduleID, @CheckInTime, N'Class_Session')";
+
+        await connection.ExecuteAsync(insertSql, new
+        {
+            req.MemberID,
+            req.ContractID,
+            ScheduleID = id,
+            CheckInTime = (DateTime)schedule.StartTime
+        });
+
+        return Ok(new { Message = "Đăng ký giữ chỗ lớp học thành công!" });
+    }
+    public class BookScheduleRequest { public int MemberID { get; set; } public int ContractID { get; set; } }
 }
